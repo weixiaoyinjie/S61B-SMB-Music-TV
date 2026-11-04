@@ -50,7 +50,10 @@ jobs:
             DIR="$GITHUB_WORKSPACE"
           else
             # Prefer the fixed source archive if old and new ZIPs coexist.
-            ZIP=$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -iname '*SDKFix*OneUpload*Source.zip' -print | sort | tail -n 1)
+            ZIP=$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -iname '*JavaFix*OneUpload*Source.zip' -print | sort | tail -n 1)
+            if [[ -z "$ZIP" ]]; then
+              ZIP=$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -iname '*SDKFix*OneUpload*Source.zip' -print | sort | tail -n 1)
+            fi
             if [[ -z "$ZIP" ]]; then
               ZIP=$(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -iname '*Source.zip' -print | sort | tail -n 1)
             fi
@@ -70,6 +73,41 @@ jobs:
           fi
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Gradle project: $DIR"
+
+      - name: Fix Media3 seek increment API in existing source ZIP
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.source.outputs.dir }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYFIX'
+          import os
+          from pathlib import Path
+          source = Path(os.environ['PROJECT_DIR']) / 'app/src/main/java/com/localsmb/music/MainActivity.java'
+          if not source.is_file():
+              raise SystemExit(f'MainActivity.java not found: {source}')
+          code = source.read_text(encoding='utf-8')
+          old = ('            player = new ExoPlayer.Builder(this)\n'
+                 '                    .setMediaSourceFactory(new DefaultMediaSourceFactory(source))\n'
+                 '                    .build();')
+          new = ('            player = new ExoPlayer.Builder(this)\n'
+                 '                    .setMediaSourceFactory(new DefaultMediaSourceFactory(source))\n'
+                 '                    .setSeekBackIncrementMs(10000)\n'
+                 '                    .setSeekForwardIncrementMs(10000)\n'
+                 '                    .build();')
+          has_legacy = ('player.setSeekBackIncrementMs(10000);' in code or
+                        'player.setSeekForwardIncrementMs(10000);' in code)
+          if has_legacy:
+              if code.count(old) != 1:
+                  raise SystemExit('Legacy seek methods found but ExoPlayer.Builder block differs; manual fix needed')
+              code = code.replace(old, new)
+              code = code.replace('            player.setSeekBackIncrementMs(10000);\n', '')
+              code = code.replace('            player.setSeekForwardIncrementMs(10000);\n', '')
+              source.write_text(code, encoding='utf-8')
+              print('Applied Media3 seek API correction (10s seek preserved)')
+          else:
+              print('Seek API already compatible; no change necessary')
+          PYFIX
 
       - name: Build debug APK
         shell: bash
